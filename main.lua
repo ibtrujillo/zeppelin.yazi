@@ -109,7 +109,7 @@ local function compress_command(suffix, out, items, pwd, header)
 end
 
 -- shortcut: confirm body has no scroll view, shows CONFIRM_MAX_LINES lines and "… N more"; replace with native scroll when yazi offers one for ya.confirm
-local CONFIRM_MAX_LINES = 21
+local CONFIRM_MAX_LINES = 11
 
 local function confirm_list(sel)
   local lines = {}
@@ -124,7 +124,7 @@ local function confirm_list(sel)
     lines[#lines + 1] = ui.Line { ui.Span(string.format("  \u{2026} %d more", total - shown)) }:align(ui.Align.LEFT)
   end
   return ya.confirm {
-    pos = { "center", w = 80, h = 30 },
+    pos = { "center", w = 80, h = math.min(#lines + 4, 30) },
     title = string.format("Compress %d selected files?", #sel.items),
     body = ui.Text(lines):align(ui.Align.LEFT),
   }
