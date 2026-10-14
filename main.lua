@@ -1,9 +1,18 @@
 local M = {}
 
-local SUFFIXES = { ".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2", ".tbz2", ".tar", ".zip", ".7z", ".gz", ".rar" }
-local TAR_COMPRESSORS = { [".tar.gz"] = "gzip", [".tgz"] = "gzip", [".tar.xz"] = "xz", [".txz"] = "xz", [".tar.bz2"] = "bzip2", [".tbz2"] = "bzip2" }
-local PASSWORD_FORMATS = { [".zip"] = true, [".7z"] = true, [".rar"] = true }
-local HEADER_FORMATS = { [".7z"] = true, [".rar"] = true }
+local FORMATS = {
+  ["tar.gz"] = { tar = "gzip" },
+  ["tgz"] = { tar = "gzip" },
+  ["tar.xz"] = { tar = "xz" },
+  ["txz"] = { tar = "xz" },
+  ["tar.bz2"] = { tar = "bzip2" },
+  ["tbz2"] = { tar = "bzip2" },
+  ["tar"] = {},
+  ["gz"] = { single = true },
+  ["zip"] = { password = true },
+  ["7z"] = { password = true, header = true },
+  ["rar"] = { password = true, header = true },
+}
 
 local function join(...)
   local t = {}
@@ -73,12 +82,30 @@ local function common_dir(paths)
   return "/" .. table.concat(common or {}, "/")
 end
 
-local function split_suffix(name)
-  for _, s in ipairs(SUFFIXES) do
-    if #name > #s and name:sub(-#s) == s then
-      return name:sub(1, -#s - 1), s
+local function ends_with_tar(base)
+  for key, fmt in pairs(FORMATS) do
+    if (key == "tar" or fmt.tar) and base:sub(-#key - 1) == "." .. key then
+      return true
     end
   end
+  return false
+end
+
+local function split_format(name)
+  local best
+  for key in pairs(FORMATS) do
+    if #name > #key + 1 and name:sub(-#key - 1) == "." .. key and (not best or #key > #best) then
+      best = key
+    end
+  end
+  if not best then
+    return
+  end
+  local base = name:sub(1, -#best - 2)
+  if FORMATS[best].single and ends_with_tar(base) then
+    return
+  end
+  return base, best
 end
 
 local function unique_path(cwd, base, suffix)
@@ -90,20 +117,20 @@ local function unique_path(cwd, base, suffix)
   return cwd .. "/" .. name
 end
 
-local function compress_command(suffix, out, items, pwd, header)
+local function compress_command(key, out, items, pwd, header)
   local enc = pwd and { "-p" .. pwd } or {}
-  if TAR_COMPRESSORS[suffix] then
-    local script = '7zz a -ttar -so x.tar "${@:2}" | 7zz a -t' .. TAR_COMPRESSORS[suffix] .. ' -si "$1"'
+  if FORMATS[key].tar then
+    local script = '7zz a -ttar -so x.tar "${@:2}" | 7zz a -t' .. FORMATS[key].tar .. ' -si "$1"'
     return Command("bash"):arg(join({ "-o", "pipefail", "-c", script, "_", out }, items))
-  elseif suffix == ".zip" then
+  elseif key == "zip" then
     return Command("7zz"):arg(join({ "a", "-tzip" }, pwd and { "-mem=AES256" } or {}, enc, { out }, items))
-  elseif suffix == ".7z" then
+  elseif key == "7z" then
     return Command("7zz"):arg(join({ "a" }, header and { "-mhe=on" } or {}, enc, { out }, items))
-  elseif suffix == ".tar" then
+  elseif key == "tar" then
     return Command("7zz"):arg(join({ "a", "-ttar", out }, items))
-  elseif suffix == ".gz" then
+  elseif key == "gz" then
     return Command("7zz"):arg(join({ "a", "-tgzip", out }, items))
-  elseif suffix == ".rar" then
+  elseif key == "rar" then
     return Command("rar"):arg(join({ "a" }, pwd and { (header and "-hp" or "-p") .. pwd } or {}, { out }, items))
   end
 end
@@ -155,21 +182,22 @@ local function compress()
   if event ~= 1 or name == "" then
     return
   end
-  local base, suffix = split_suffix(name)
-  if not suffix then
+  local base, key = split_format(name)
+  if not key then
     ya.notify { title = "Compress", content = "Unknown archive format", level = "error", timeout = 10 }
     return
   end
 
   local pwd, header
-  if PASSWORD_FORMATS[suffix] then
+  local fmt = FORMATS[key]
+  if fmt.password then
     local value, pevent = ya.input { pos = { "top-center", y = 2, w = 50 }, title = "Password (empty = none):", obscure = true }
     if pevent ~= 1 then
       return
     end
     if value ~= "" then
       pwd = value
-      if HEADER_FORMATS[suffix] then
+      if fmt.header then
         header = ya.confirm {
           pos = { "center", w = 60, h = 8 },
           title = "Encrypt file names?",
@@ -180,14 +208,14 @@ local function compress()
   end
 
   local origin = common_dir(paths)
-  local out = unique_path(sel.cwd, base, suffix)
+  local out = unique_path(sel.cwd, base, "." .. key)
   local items = {}
   local prefix = origin == "/" and "/" or origin .. "/"
   for _, p in ipairs(paths) do
     items[#items + 1] = p:sub(#prefix + 1)
   end
 
-  local cmd = compress_command(suffix, out, items, pwd, header)
+  local cmd = compress_command(key, out, items, pwd, header)
   local res = cmd and cmd:cwd(origin):stdin(Command.NULL):stdout(Command.NULL):stderr(Command.PIPED):output()
 
   ya.emit("escape", {})
