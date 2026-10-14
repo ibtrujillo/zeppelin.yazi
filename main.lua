@@ -112,7 +112,7 @@ local function confirm_list(sel)
   local lines = {}
   for _, it in ipairs(sel.items) do
     local icon = th.icon:match(File { url = Url(it.path), cha = Cha { mode = tonumber(it.dir and "40700" or "100644", 8) } })
-    lines[#lines + 1] = ui.Line { icon and ui.Span(icon.text .. " "):style(icon.style) or ui.Span("  "), ui.Span(it.path) }
+    lines[#lines + 1] = ui.Line { ui.Span("  "), icon and ui.Span(icon.text .. " "):style(icon.style) or ui.Span("  "), ui.Span(it.path) }:align(ui.Align.LEFT)
   end
   return ya.confirm {
     pos = { "center", w = 80, h = math.min(#lines + 4, 30) },
