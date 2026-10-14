@@ -111,11 +111,9 @@ end
 local function confirm_list(sel)
   local lines = {}
   for _, it in ipairs(sel.items) do
-    local icon = it.dir and ui.Span("\u{f07b} "):fg("blue") or ui.Span("\u{f15b} ")
-    lines[#lines + 1] = ui.Line { icon, ui.Span(it.path) }
+    local icon = th.icon:match(File { url = Url(it.path), cha = Cha { mode = tonumber(it.dir and "40700" or "100644", 8) } })
+    lines[#lines + 1] = ui.Line { icon and ui.Span(icon.text .. " "):style(icon.style) or ui.Span("  "), ui.Span(it.path) }
   end
-  lines[#lines + 1] = ui.Line ""
-  lines[#lines + 1] = ui.Line { ui.Span("\u{f07b} "):fg("blue"), ui.Span(sel.cwd) }
   return ya.confirm {
     pos = { "center", w = 80, h = math.min(#lines + 4, 30) },
     title = string.format("Compress %d selected files?", #sel.items),
