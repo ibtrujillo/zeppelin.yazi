@@ -34,6 +34,10 @@ local function first_volume(path)
   if stem then
     head = stem .. ".part" .. string.rep("0", #n - 1) .. "1.rar"
   end
+  stem, n = path:match("^(.*)%.zip%.(%d+)$")
+  if stem then
+    head = stem .. ".zip." .. string.rep("0", #n - 1) .. "1"
+  end
   stem = path:match("^(.*)%.r%d%d+$")
   if stem then
     head = stem .. ".rar"
@@ -45,7 +49,7 @@ local function first_volume(path)
 end
 
 local function volume_number(path)
-  local n = path:match("%.7z%.(%d+)$") or path:match("%.part(%d+)%.rar$")
+  local n = path:match("%.7z%.(%d+)$") or path:match("%.zip%.(%d+)$") or path:match("%.part(%d+)%.rar$")
   if n then
     return tonumber(n)
   end
@@ -329,28 +333,29 @@ function M:entry(job)
   end
   path = first_volume(path)
 
-  local pwd = "-p-"
+  local pwd
   if encrypted(path) then
     local value, event = ya.input { pos = { "top-center", y = 2, w = 50 }, title = "Password:", obscure = true }
     if event ~= 1 or value == "" then
       return
     end
-    pwd = "-p" .. value
+    pwd = value
   end
 
-  local base = path:gsub("%.part0*1%.rar$", ""):gsub("%.rar$", "")
+  local base = path:gsub("%.part0*1%.rar$", ""):gsub("%.rar$", ""):gsub("%.7z%.%d+$", ""):gsub("%.zip%.%d+$", "")
   local dir, n = base, 0
   while fs.cha(Url(dir)) do
     n = n + 1
     dir = base .. "_" .. n
   end
 
-  local out = Command("rar")
-    :arg({ "x", "-y", "-idq", pwd, path, dir .. "/" })
-    :stdin(Command.NULL)
-    :stdout(Command.NULL)
-    :stderr(Command.PIPED)
-    :output()
+  local cmd
+  if path:match("%.7z%.%d+$") or path:match("%.zip%.%d+$") then
+    cmd = Command("7zz"):arg(join({ "x", "-y", "-bd", "-o" .. dir }, pwd and { "-p" .. pwd } or {}, { path }))
+  else
+    cmd = Command("rar"):arg({ "x", "-y", "-idq", "-p" .. (pwd or "-"), path, dir .. "/" })
+  end
+  local out = cmd:stdin(Command.NULL):stdout(Command.NULL):stderr(Command.PIPED):output()
 
   if out and out.status.success then
     return
