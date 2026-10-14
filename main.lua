@@ -248,17 +248,9 @@ end
 
 local UNITS = { b = 1, k = 1e3, kb = 1e3, kib = 1024, m = 1e6, mb = 1e6, mib = 1024 ^ 2, g = 1e9, gb = 1e9, gib = 1024 ^ 3 }
 
-local function volume_size(spec, paths)
-  local num, unit = spec:match("^(%d*%.?%d+)%s*(%a+)$")
-  if num then
-    local mult = UNITS[unit:lower()]
-    local bytes = mult and math.floor(tonumber(num) * mult)
-    return bytes and bytes > 0 and bytes .. "b"
-  end
-  local parts = tonumber(spec:match("^%d+$"))
-  if not parts or parts < 1 then
-    return
-  end
+local MAX_PARTS = 999
+
+local function selection_bytes(paths)
   local out = Command("du"):arg(join({ "-sbL", "--" }, paths)):stdin(Command.NULL):stderr(Command.NULL):output()
   if not out or not out.status.success then
     return
@@ -267,7 +259,29 @@ local function volume_size(spec, paths)
   for line in out.stdout:gmatch("[^\n]+") do
     total = total + tonumber(line:match("^%d+"))
   end
-  return math.ceil(total / parts) .. "b"
+  return total
+end
+
+local function volume_size(spec, paths)
+  local total = selection_bytes(paths)
+  if not total then
+    return nil, "Cannot measure selection"
+  end
+  local bytes
+  local num, unit = spec:match("^(%d*%.?%d+)%s*(%a+)$")
+  if num then
+    local mult = UNITS[unit:lower()]
+    bytes = mult and math.floor(tonumber(num) * mult)
+  else
+    local parts = tonumber(spec:match("^%d+$") or "")
+    if parts and parts >= 2 and parts <= MAX_PARTS then
+      bytes = math.ceil(total / parts)
+    end
+  end
+  if not bytes or bytes < 1 or bytes >= total or math.ceil(total / bytes) > MAX_PARTS then
+    return nil, "Invalid volume: " .. spec .. " (needs 2-999 parts)"
+  end
+  return string.format("%db", bytes)
 end
 
 local function compress(split)
@@ -335,10 +349,13 @@ local function compress(split)
   end
 
   local entries = drop_nested(paths)
-  local vol = spec and volume_size(spec, entries)
-  if spec and not vol then
-    ya.notify { title = "Compress", content = "Invalid parts or size: " .. spec, level = "error", timeout = 10 }
-    return
+  local vol, why
+  if spec then
+    vol, why = volume_size(spec, entries)
+    if not vol then
+      ya.notify { title = "Compress", content = why, level = "error", timeout = 10 }
+      return
+    end
   end
   local names = entry_names(entries)
   local root = stage(entries, names)
