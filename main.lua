@@ -61,25 +61,70 @@ local yanked = ya.sync(function()
   return { cwd = tostring(cx.active.current.cwd), items = items }
 end)
 
-local function common_dir(paths)
-  local common
+local function drop_nested(paths)
+  local kept = {}
   for _, p in ipairs(paths) do
-    local parts = {}
-    for s in p:gmatch("[^/]+") do
-      parts[#parts + 1] = s
-    end
-    table.remove(parts)
-    if not common then
-      common = parts
-    else
-      local n = 0
-      while n < #common and n < #parts and common[n + 1] == parts[n + 1] do
-        n = n + 1
+    local nested = false
+    for _, q in ipairs(paths) do
+      if p:sub(1, #q + 1) == q .. "/" then
+        nested = true
+        break
       end
-      common = table.move(common, 1, n, 1, {})
+    end
+    if not nested then
+      kept[#kept + 1] = p
     end
   end
-  return "/" .. table.concat(common or {}, "/")
+  return kept
+end
+
+local function entry_names(paths)
+  local segs, names = {}, {}
+  for i, p in ipairs(paths) do
+    segs[i] = {}
+    for s in p:gmatch("[^/]+") do
+      segs[i][#segs[i] + 1] = s
+    end
+  end
+  local function tail(s, d)
+    return table.concat(s, "/", #s - d + 1, #s)
+  end
+  for i, s in ipairs(segs) do
+    local d = 1
+    while d < #s do
+      local clash = false
+      for j, t in ipairs(segs) do
+        if j ~= i and #t >= d and tail(t, d) == tail(s, d) then
+          clash = true
+          break
+        end
+      end
+      if not clash then
+        break
+      end
+      d = d + 1
+    end
+    names[i] = tail(s, d)
+  end
+  return names
+end
+
+local function stage(paths, names)
+  local res = Command("mktemp"):arg({ "-d" }):stdout(Command.PIPED):stderr(Command.NULL):output()
+  if not res or not res.status.success then
+    return
+  end
+  local root = res.stdout:gsub("\n$", "")
+  for i, p in ipairs(paths) do
+    local dest = root .. "/" .. names[i]
+    local made = Command("mkdir"):arg({ "-p", dest:match("^(.*)/[^/]+$") }):output()
+    local link = made and made.status.success and Command("ln"):arg({ "-s", p, dest }):output()
+    if not link or not link.status.success then
+      Command("rm"):arg({ "-rf", root }):output()
+      return
+    end
+  end
+  return root
 end
 
 local function ends_with_tar(base)
@@ -207,16 +252,18 @@ local function compress()
     end
   end
 
-  local origin = common_dir(paths)
-  local out = unique_path(sel.cwd, base, "." .. key)
-  local items = {}
-  local prefix = origin == "/" and "/" or origin .. "/"
-  for _, p in ipairs(paths) do
-    items[#items + 1] = p:sub(#prefix + 1)
+  local entries = drop_nested(paths)
+  local names = entry_names(entries)
+  local root = stage(entries, names)
+  if not root then
+    ya.notify { title = "Compress", content = "Failed to stage selection", level = "error", timeout = 10 }
+    return
   end
 
-  local cmd = compress_command(key, out, items, pwd, header)
-  local res = cmd and cmd:cwd(origin):stdin(Command.NULL):stdout(Command.NULL):stderr(Command.PIPED):output()
+  local out = unique_path(sel.cwd, base, "." .. key)
+  local cmd = compress_command(key, out, names, pwd, header)
+  local res = cmd and cmd:cwd(root):stdin(Command.NULL):stdout(Command.NULL):stderr(Command.PIPED):output()
+  Command("rm"):arg({ "-rf", root }):output()
 
   ya.emit("escape", {})
   if res and res.status.success then
