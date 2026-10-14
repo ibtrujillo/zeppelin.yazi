@@ -44,9 +44,11 @@ function M:entry(job)
     pwd = "-p" .. value
   end
 
-  local dir = path:gsub("%.rar$", "")
-  if fs.cha(Url(dir)) then
-    return ya.notify { title = "Extract", content = dir .. " already exists", level = "error", timeout = 5 }
+  local base = path:gsub("%.rar$", "")
+  local dir, n = base, 0
+  while fs.cha(Url(dir)) do
+    n = n + 1
+    dir = base .. "_" .. n
   end
 
   local out = Command("rar")
@@ -56,11 +58,15 @@ function M:entry(job)
     :stderr(Command.PIPED)
     :output()
 
-  if not out then
-    ya.notify { title = "Extract", content = "Failed to start rar", level = "error", timeout = 5 }
-  elseif not out.status.success then
-    ya.notify { title = "Extract", content = out.stderr, level = "error", timeout = 10 }
+  if out and out.status.success then
+    return
   end
+  fs.remove("dir_all", Url(dir))
+  local msg = "Failed to start rar"
+  if out then
+    msg = out.stderr:find("Incorrect password", 1, true) and "Incorrect password" or out.stderr:match("[^\r\n]+") or "rar failed"
+  end
+  ya.notify { title = "Extract", content = msg, level = "error", timeout = 10 }
 end
 
 return M
