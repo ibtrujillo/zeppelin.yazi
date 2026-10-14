@@ -24,6 +24,37 @@ local function join(...)
   return t
 end
 
+local function first_volume(path)
+  local head
+  local stem, n = path:match("^(.*)%.7z%.(%d+)$")
+  if stem then
+    head = stem .. ".7z." .. string.rep("0", #n - 1) .. "1"
+  end
+  stem, n = path:match("^(.*)%.part(%d+)%.rar$")
+  if stem then
+    head = stem .. ".part" .. string.rep("0", #n - 1) .. "1.rar"
+  end
+  stem = path:match("^(.*)%.r%d%d+$")
+  if stem then
+    head = stem .. ".rar"
+  end
+  if head and fs.cha(Url(head)) then
+    return head
+  end
+  return path
+end
+
+local function volume_number(path)
+  local n = path:match("%.7z%.(%d+)$") or path:match("%.part(%d+)%.rar$")
+  if n then
+    return tonumber(n)
+  end
+  n = path:match("%.r(%d%d+)$")
+  if n then
+    return tonumber(n) + 2
+  end
+end
+
 local function encrypted(path)
   local out = Command("7zz")
     :arg({ "l", "-slt", "-sccUTF-8", path })
@@ -35,14 +66,19 @@ local function encrypted(path)
 end
 
 function M:peek(job)
+  local volume = volume_number(tostring(job.file.url))
+  if volume and volume > 1 then
+    return ya.preview_widget(job, ui.Text(ui.Line { ui.Span("\u{f1c6} Multi-volume part " .. volume) }):area(job.area))
+  end
   local out = Command("7zz")
     :arg({ "l", "-slt", "-sccUTF-8", tostring(job.file.path) })
     :stdin(Command.NULL)
     :stdout(Command.PIPED)
-    :stderr(Command.NULL)
+    :stderr(Command.PIPED)
     :output()
 
-  if out and out.stdout:find("Enter password", 1, true) then
+  local text = out and out.stdout .. out.stderr or ""
+  if text:find("Enter password", 1, true) or (out and not out.status.success and text:find("Can not open the file as", 1, true)) then
     return ya.preview_widget(job, ui.Text(ui.Line { ui.Span("\u{f023} Filename(s) encrypted") }):area(job.area))
   end
 
@@ -50,7 +86,10 @@ function M:peek(job)
 end
 
 function M:seek(job)
-  require("archive"):seek(job)
+  local volume = volume_number(tostring(job.file.url))
+  if not volume or volume <= 1 then
+    require("archive"):seek(job)
+  end
 end
 
 local yanked = ya.sync(function()
@@ -288,6 +327,7 @@ function M:entry(job)
   if not path then
     return
   end
+  path = first_volume(path)
 
   local pwd = "-p-"
   if encrypted(path) then
@@ -298,7 +338,7 @@ function M:entry(job)
     pwd = "-p" .. value
   end
 
-  local base = path:gsub("%.rar$", "")
+  local base = path:gsub("%.part0*1%.rar$", ""):gsub("%.rar$", "")
   local dir, n = base, 0
   while fs.cha(Url(dir)) do
     n = n + 1
