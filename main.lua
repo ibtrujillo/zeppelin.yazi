@@ -9,9 +9,9 @@ local FORMATS = {
   ["tbz2"] = { tar = "bzip2" },
   ["tar"] = {},
   ["gz"] = { single = true },
-  ["zip"] = { password = true },
-  ["7z"] = { password = true, header = true },
-  ["rar"] = { password = true, header = true },
+  ["zip"] = { password = true, split = true },
+  ["7z"] = { password = true, header = true, split = true },
+  ["rar"] = { password = true, header = true, split = true },
 }
 
 local function join(...)
@@ -205,21 +205,22 @@ local function unique_path(cwd, base, suffix)
   return cwd .. "/" .. name
 end
 
-local function compress_command(key, out, items, pwd, header)
+local function compress_command(key, out, items, pwd, header, vol)
   local enc = pwd and { "-p" .. pwd } or {}
+  local split = vol and { "-v" .. vol } or {}
   if FORMATS[key].tar then
     local script = '7zz a -ttar -so x.tar "${@:2}" | 7zz a -t' .. FORMATS[key].tar .. ' -si "$1"'
     return Command("bash"):arg(join({ "-o", "pipefail", "-c", script, "_", out }, items))
   elseif key == "zip" then
-    return Command("7zz"):arg(join({ "a", "-tzip" }, pwd and { "-mem=AES256" } or {}, enc, { out }, items))
+    return Command("7zz"):arg(join({ "a", "-tzip" }, pwd and { "-mem=AES256" } or {}, enc, split, { out }, items))
   elseif key == "7z" then
-    return Command("7zz"):arg(join({ "a" }, header and { "-mhe=on" } or {}, enc, { out }, items))
+    return Command("7zz"):arg(join({ "a" }, header and { "-mhe=on" } or {}, enc, split, { out }, items))
   elseif key == "tar" then
     return Command("7zz"):arg(join({ "a", "-ttar", out }, items))
   elseif key == "gz" then
     return Command("7zz"):arg(join({ "a", "-tgzip", out }, items))
   elseif key == "rar" then
-    return Command("rar"):arg(join({ "a" }, pwd and { (header and "-hp" or "-p") .. pwd } or {}, { out }, items))
+    return Command("rar"):arg(join({ "a" }, pwd and { (header and "-hp" or "-p") .. pwd } or {}, split, { out }, items))
   end
 end
 
@@ -245,7 +246,31 @@ local function confirm_list(sel)
   }
 end
 
-local function compress()
+local UNITS = { b = 1, k = 1e3, kb = 1e3, kib = 1024, m = 1e6, mb = 1e6, mib = 1024 ^ 2, g = 1e9, gb = 1e9, gib = 1024 ^ 3 }
+
+local function volume_size(spec, paths)
+  local num, unit = spec:match("^(%d*%.?%d+)%s*(%a+)$")
+  if num then
+    local mult = UNITS[unit:lower()]
+    local bytes = mult and math.floor(tonumber(num) * mult)
+    return bytes and bytes > 0 and bytes .. "b"
+  end
+  local parts = tonumber(spec:match("^%d+$"))
+  if not parts or parts < 1 then
+    return
+  end
+  local out = Command("du"):arg(join({ "-sbL", "--" }, paths)):stdin(Command.NULL):stderr(Command.NULL):output()
+  if not out or not out.status.success then
+    return
+  end
+  local total = 0
+  for line in out.stdout:gmatch("[^\n]+") do
+    total = total + tonumber(line:match("^%d+"))
+  end
+  return math.ceil(total / parts) .. "b"
+end
+
+local function compress(split)
   local sel = yanked()
   if #sel.items == 0 then
     ya.notify { title = "Compress", content = "Nothing yanked: select with space, then y", level = "warn", timeout = 5 }
@@ -276,8 +301,22 @@ local function compress()
     return
   end
 
-  local pwd, header
   local fmt = FORMATS[key]
+  if split and not fmt.split then
+    ya.notify { title = "Compress", content = "Format has no multi-volume support", level = "error", timeout = 10 }
+    return
+  end
+
+  local spec
+  if split then
+    local value, sevent = ya.input { pos = { "top-center", y = 2, w = 50 }, title = "Parts (e.g. 4) or volume size (e.g. 5.5MB, 89kiB):" }
+    if sevent ~= 1 or value == "" then
+      return
+    end
+    spec = value
+  end
+
+  local pwd, header
   if fmt.password then
     local value, pevent = ya.input { pos = { "top-center", y = 2, w = 50 }, title = "Password (empty = none):", obscure = true }
     if pevent ~= 1 then
@@ -296,6 +335,11 @@ local function compress()
   end
 
   local entries = drop_nested(paths)
+  local vol = spec and volume_size(spec, entries)
+  if spec and not vol then
+    ya.notify { title = "Compress", content = "Invalid parts or size: " .. spec, level = "error", timeout = 10 }
+    return
+  end
   local names = entry_names(entries)
   local root = stage(entries, names)
   if not root then
@@ -304,7 +348,7 @@ local function compress()
   end
 
   local out = unique_path(sel.cwd, base, "." .. key)
-  local cmd = compress_command(key, out, names, pwd, header)
+  local cmd = compress_command(key, out, names, pwd, header, vol)
   local res = cmd and cmd:cwd(root):stdin(Command.NULL):stdout(Command.NULL):stderr(Command.PIPED):output()
   Command("rm"):arg({ "-rf", root }):output()
 
@@ -324,7 +368,10 @@ end
 
 function M:entry(job)
   if job.args[1] == "compress" then
-    return compress()
+    return compress(false)
+  end
+  if job.args[1] == "split" then
+    return compress(true)
   end
 
   local path = job.args[1]
