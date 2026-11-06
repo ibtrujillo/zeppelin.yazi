@@ -177,9 +177,85 @@ function M.first_volume(path, exists)
   return path
 end
 
-function M.archive_base(path)
-  local base = path:gsub("%.part0*1%.rar$", ""):gsub("%.rar$", ""):gsub("%.7z%.%d+$", ""):gsub("%.zip%.%d+$", "")
-  return base
+M.EXTRACT_TOOL = {
+  ["tar.gz"] = "unar",
+  ["tgz"] = "unar",
+  ["tar.bz2"] = "unar",
+  ["tbz2"] = "unar",
+  ["tar.xz"] = "unar",
+  ["txz"] = "unar",
+  ["tar"] = "unar",
+  ["gz"] = "unar",
+  ["bz2"] = "unar",
+  ["xz"] = "unar",
+  ["rar"] = "unar",
+  ["zip"] = "7zz",
+  ["7z"] = "7zz",
+}
+
+M.EXTRACT_PASSWORD = { rar = true, zip = true, ["7z"] = true }
+
+local EXTRACT_VOLUMES = {
+  { "%.part%d+%.rar$", "rar" },
+  { "%.r%d%d+$", "rar" },
+  { "%.7z%.%d+$", "7z" },
+  { "%.zip%.%d+$", "zip" },
+}
+
+function M.extract_route(path)
+  local name = path:match("[^/]+$") or ""
+  local dir = path:sub(1, #path - #name)
+  local lower = name:lower()
+  for _, v in ipairs(EXTRACT_VOLUMES) do
+    local s = lower:find(v[1])
+    if s and s > 1 then
+      return { base = dir .. name:sub(1, s - 1), tool = M.EXTRACT_TOOL[v[2]], password = M.EXTRACT_PASSWORD[v[2]] }
+    end
+  end
+  local best
+  for ext in pairs(M.EXTRACT_TOOL) do
+    local suffix = "." .. ext
+    if #name > #suffix and lower:sub(-#suffix) == suffix and (not best or #ext > #best) then
+      best = ext
+    end
+  end
+  if best then
+    return { base = dir .. name:sub(1, #name - #best - 1), tool = M.EXTRACT_TOOL[best], password = M.EXTRACT_PASSWORD[best] }
+  end
+end
+
+function M.extract_jobs(paths, is_file)
+  local jobs, seen = {}, {}
+  for _, p in ipairs(paths) do
+    local first = M.first_volume(p, is_file)
+    local route = not seen[first] and M.extract_route(first)
+    if route and is_file(first) then
+      seen[first] = true
+      jobs[#jobs + 1] = { path = first, route = route }
+    end
+  end
+  return jobs
+end
+
+function M.needs_password(text)
+  return text:lower():find("password", 1, true) ~= nil
+end
+
+function M.failure_message(text, had_password)
+  if had_password then
+    return "Wrong password or damaged archive"
+  end
+  local first, last
+  for line in text:gmatch("[^\r\n]+") do
+    if line:match("%S") then
+      last = line
+      local l = line:lower()
+      if not first and (l:find("error", 1, true) or l:find("failed", 1, true)) then
+        first = line
+      end
+    end
+  end
+  return ((first or last or "Extraction failed"):gsub("^%s+", ""))
 end
 
 -- shortcut: 7zz takes -p in argv (visible in ps); no password-file or stdin form works for 7zz t, upgrade if 7zz gains one
@@ -204,11 +280,12 @@ function M.archive_command(key, out, items, pwd, header, vol)
 end
 
 -- shortcut: 7zz takes -p in argv (visible in ps); no password-file or stdin form works for 7zz x, upgrade if 7zz gains one
-function M.extract_args(tool, dir, pwd, path)
-  if tool == "unar" then
-    return M.join({ "-q", "-o", dir }, pwd and { "-p", pwd } or {}, { path })
+-- Callers run the plan with cwd = dir: 7zz -o mangles a '*' in the destination path.
+function M.extract_plan(route, dir, pwd, path)
+  if route.tool == "unar" then
+    return "unar", M.join({ "-q", "-o", dir }, pwd and { "-p", pwd } or {}, { "--", path })
   end
-  return M.join({ "x", "-y", "-bd", "-o" .. dir }, pwd and { "-p" .. pwd } or {}, { path })
+  return "7zz", M.join({ "x", "-y", "-bd" }, pwd and { "-p" .. pwd } or {}, { "--", path })
 end
 
 local function confirm_line(item)
