@@ -12,7 +12,7 @@ its own; the other plugins call it with `require("zeppelin")`.
 ## Installation
 
 ```sh
-ya pkg add ibtrujillo/zeppelin.yazi
+ya pkg add ibtrujillo/zeppelin
 ```
 
 ## Tests
